@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Transfer — Stage 1 baseline</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script>
+  // If either library failed to load (network blocked, ad-blocker, etc.), fail loudly on-page
+  // instead of silently breaking every button — this is what was happening before.
+  window.addEventListener('load', () => {
+    const missing = [];
+    if (typeof qrcode === 'undefined') missing.push('qrcode-generator (QR encoding)');
+    if (typeof jsQR === 'undefined') missing.push('jsQR (QR decoding)');
+    if (missing.length) {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background:#e2543f;color:#fff;padding:10px 14px;font-size:13px;font-family:monospace;';
+      banner.textContent = 'Failed to load: ' + missing.join(', ') + '. Check your internet connection / ad-blocker and reload.';
+      document.body.prepend(banner);
+    }
+  });
+</script>
+<style>
+  :root{
+    --bg:#0f1115;
+    --panel:#171a21;
+    --line:#2a2f3a;
+    --text:#e8eaed;
+    --dim:#9aa3b2;
+    --accent:#4fd1a5;
+    --warn:#e2a33f;
+    --err:#e2543f;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:20px;
+  }
+  .mono{ font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+  h1{ font-size:18px; margin:0 0 4px; }
+  .subtitle{ color:var(--dim); font-size:13px; margin-bottom:18px; }
+  .warn-box{
+    background:rgba(226,163,63,0.1);
+    border:1px solid var(--warn);
+    color:var(--warn);
+    font-size:13px;
+    padding:10px 12px;
+    border-radius:6px;
+    margin-bottom:18px;
+  }
+  .tabs{ display:flex; gap:8px; margin-bottom:16px; }
+  .tab{
+    padding:8px 16px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:6px;
+    cursor:pointer;
+    color:var(--dim);
+    font-size:14px;
+  }
+  .tab.active{ color:var(--text); border-color:var(--accent); }
+  .panel{
+    display:none;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:20px;
+    max-width:640px;
+  }
+  .panel.active{ display:block; }
+  .row{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .field{ display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--dim); }
+  .field input, .field select{
+    background:#0f1115;
+    border:1px solid var(--line);
+    color:var(--text);
+    padding:7px 9px;
+    border-radius:5px;
+    font-size:13px;
+    width:110px;
+  }
+  input[type="file"]{ color:var(--text); font-size:13px; }
+  .btn{
+    background:var(--accent);
+    color:#062018;
+    border:none;
+    padding:10px 18px;
+    border-radius:6px;
+    font-size:14px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  .btn.stop{ background:var(--err); color:#2a0906; }
+  .btn.ghost{ background:transparent; border:1px solid var(--line); color:var(--text); }
+  label.check{ display:flex; align-items:center; gap:6px; font-size:13px; color:var(--dim); }
+
+  #sendCanvas{
+    display:block; margin:16px 0; background:#fff; border-radius:6px;
+    width:320px; height:320px;
+  }
+  #video{ display:none; }
+  #scanPreview{
+    width:100%; max-width:400px; border-radius:6px; border:1px solid var(--line);
+    display:block; margin-bottom:14px; background:#000;
+  }
+  .stats{
+    font-size:12.5px; color:var(--dim); line-height:1.7;
+    border-top:1px solid var(--line); padding-top:12px; margin-top:14px;
+  }
+  .stats b{ color:var(--text); }
+  .bar-outer{
+    width:100%; height:8px; background:#0f1115; border-radius:4px; overflow:hidden;
+    border:1px solid var(--line); margin:8px 0;
+  }
+  .bar-inner{ height:100%; background:var(--accent); width:0%; transition:width 0.15s ease; }
+  .download-box{
+    margin-top:14px; padding:12px; border:1px solid var(--accent); border-radius:6px;
+    background:rgba(79,209,165,0.08);
+  }
+  .download-box a{ color:var(--accent); font-weight:600; text-decoration:none; }
+  footer{ margin-top:24px; font-size:12px; color:var(--dim); max-width:640px; }
+</style>
+</head>
+<body>
+
+  <h1>QR Transfer — Stage 1 baseline</h1>
+  <div class="subtitle">File → sequence of QR frames → camera scan → reassembled file. No internet required.</div>
+
+  <div class="warn-box">
+    Camera access needs a secure context. Serve this file over HTTPS or <span class="mono">localhost</span>
+    (e.g. <span class="mono">python3 -m http.server</span> in this file's folder) — opening it directly via
+    <span class="mono">file://</span> may block the camera in some browsers.
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="send">Send</div>
+    <div class="tab" data-tab="receive">Receive</div>
+  </div>
+
+  <!-- SEND PANEL -->
+  <div class="panel active" id="panel-send">
+    <input type="file" id="fileInput"><br><br>
+
+    <div class="row">
+      <div class="field">
+        <label for="chunkSize">Chunk size (bytes)</label>
+        <input type="number" id="chunkSize" value="500" min="50" max="2000">
+      </div>
+      <div class="field">
+        <label for="fps">Frames / second</label>
+        <input type="number" id="fps" value="8" min="1" max="30">
+      </div>
+      <div class="field">
+        <label for="ecLevel">Error correction</label>
+        <select id="ecLevel">
+          <option value="L">L (max density)</option>
+          <option value="M" selected>M (balanced)</option>
+          <option value="Q">Q (robust)</option>
+          <option value="H">H (most robust)</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="check"><input type="checkbox" id="loopCheckbox" checked> Loop continuously until stopped</label>
+    <br><br>
+
+    <button class="btn" id="startSendBtn">Start sending</button>
+    <button class="btn stop" id="stopSendBtn" disabled>Stop</button>
+
+    <canvas id="sendCanvas" width="600" height="600"></canvas>
+
+    <div class="stats" id="sendStats">Choose a file to begin.</div>
+  </div>
+
+  <!-- RECEIVE PANEL -->
+  <div class="panel" id="panel-receive">
+    <button class="btn" id="startRecvBtn">Start camera</button>
+    <button class="btn stop" id="stopRecvBtn" disabled>Stop</button>
+    <button class="btn ghost" id="resetRecvBtn">Reset</button>
+    <br><br>
+
+    <video id="video" autoplay playsinline muted></video>
+    <div id="zoomStatus" style="font-size:12px;color:var(--dim);margin-bottom:6px;">Scanning full frame…</div>
+    <canvas id="scanPreview"></canvas>
+
+    <div class="bar-outer"><div class="bar-inner" id="recvBar"></div></div>
+    <div class="stats" id="recvStats">Waiting for camera…</div>
+
+    <div class="download-box" id="downloadBox" style="display:none;">
+      Transfer complete — <a id="downloadLink" download>download file</a>
+    </div>
+  </div>
+
+  <footer>
+    Stage 1 baseline: single QR per frame, cyclic broadcast, no return channel.
+    Next step (Stage 2) swaps this for a dense color barcode codec and fountain coding for real throughput gains.
+  </footer>
+
+<script>
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('panel-' + t.dataset.tab).classList.add('active');
+  });
+});
+
+/* ---------- shared: CRC32, base64, frame packing ---------- */
+const FRAME_TYPE_META = 0;
+const FRAME_TYPE_DATA = 1;
+const HEADER_LEN = 15; // 1 (type) + 4 (session) + 4 (totalChunks) + 4 (chunkIndex) + 2 (payloadLen)
+
+function crc32(bytes) {
+  let crc = ~0;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return (~crc) >>> 0;
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function buildFrame(type, sessionId, totalChunks, chunkIndex, payload) {
+  const full = new Uint8Array(HEADER_LEN + payload.length + 4);
+  const dv = new DataView(full.buffer);
+  dv.setUint8(0, type);
+  dv.setUint32(1, sessionId, false);
+  dv.setUint32(5, totalChunks, false);
+  dv.setUint32(9, chunkIndex, false);
+  dv.setUint16(13, payload.length, false);
+  full.set(payload, HEADER_LEN);
+  dv.setUint32(HEADER_LEN + payload.length, crc32(payload), false);
+  return full;
+}
+
+function parseFrame(full) {
+  if (full.length < HEADER_LEN + 4) return null;
+  const dv = new DataView(full.buffer, full.byteOffset, full.byteLength);
+  const type = dv.getUint8(0);
+  const sessionId = dv.getUint32(1, false);
+  const totalChunks = dv.getUint32(5, false);
+  const chunkIndex = dv.getUint32(9, false);
+  const payloadLen = dv.getUint16(13, false);
+  if (full.length < HEADER_LEN + payloadLen + 4) return null;
+  const payload = full.slice(HEADER_LEN, HEADER_LEN + payloadLen);
+  const crcStored = dv.getUint32(HEADER_LEN + payloadLen, false);
+  if (crc32(payload) !== crcStored) return null;
+  return { type, sessionId, totalChunks, chunkIndex, payload };
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  return (n/1024/1024).toFixed(2) + ' MB';
+}
+
+/* ================= SENDER ================= */
+const fileInput = document.getElementById('fileInput');
+const chunkSizeInput = document.getElementById('chunkSize');
+const fpsInput = document.getElementById('fps');
+const ecSelect = document.getElementById('ecLevel');
+const loopCheckbox = document.getElementById('loopCheckbox');
+const startSendBtn = document.getElementById('startSendBtn');
+const stopSendBtn = document.getElementById('stopSendBtn');
+const sendCanvas = document.getElementById('sendCanvas');
+const sendStats = document.getElementById('sendStats');
+
+let sending = false;
+
+function renderQR(text, ecLevel) {
+  const qr = qrcode(0, ecLevel);
+  qr.addData(text);
+  qr.make();
+  const count = qr.getModuleCount();
+  const ctx = sendCanvas.getContext('2d');
+  const size = sendCanvas.width;
+  const cell = size / count;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < count; r++) {
+    for (let c = 0; c < count; c++) {
+      if (qr.isDark(r, c)) {
+        ctx.fillRect(Math.round(c*cell), Math.round(r*cell), Math.ceil(cell), Math.ceil(cell));
+      }
+    }
+  }
+}
+
+startSendBtn.addEventListener('click', startSending);
+stopSendBtn.addEventListener('click', () => { sending = false; });
+
+async function startSending() {
+  const file = fileInput.files[0];
+  if (!file) { alert('Choose a file first.'); return; }
+
+  const chunkSize = Math.max(50, parseInt(chunkSizeInput.value, 10) || 500);
+  const fps = Math.max(1, parseFloat(fpsInput.value) || 8);
+  const ecLevel = ecSelect.value;
+  const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+  const sessionId = (Math.random() * 0xFFFFFFFF) >>> 0;
+
+  const metaObj = { name: file.name, size: file.size, mime: file.type || 'application/octet-stream', chunkSize, totalChunks };
+  const metaBytes = new TextEncoder().encode(JSON.stringify(metaObj));
+  let metaFrameB64;
+  try {
+    metaFrameB64 = bytesToBase64(buildFrame(FRAME_TYPE_META, sessionId, totalChunks, 0, metaBytes));
+  } catch (e) {
+    alert('Could not build metadata frame: ' + e.message);
+    return;
+  }
+
+  sending = true;
+  startSendBtn.disabled = true;
+  stopSendBtn.disabled = false;
+
+  let frameCount = 0, loopCount = 0;
+  const t0 = performance.now();
+
+  function updateStats() {
+    const elapsed = (performance.now() - t0) / 1000;
+    const rate = elapsed > 0 ? (frameCount * chunkSize) / elapsed : 0;
+    sendStats.innerHTML =
+      `Loop <b>${loopCount}</b> · frame <b>${frameCount}</b> · ${totalChunks} chunks/loop<br>` +
+      `Elapsed <b>${elapsed.toFixed(1)}s</b> · ~<b>${fmtBytes(rate)}/s</b> effective rate<br>` +
+      `File: <b>${file.name}</b> (${fmtBytes(file.size)})`;
+  }
+
+  outer:
+  while (sending) {
+    loopCount++;
+    try { renderQR(metaFrameB64, ecLevel); } catch (e) { alert('QR encode error: ' + e.message); break; }
+    frameCount++; updateStats();
+    await sleep(1000 / fps);
+
+    for (let i = 0; i < totalChunks; i++) {
+      if (!sending) break outer;
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const buf = await file.slice(start, end).arrayBuffer();
+      const payload = new Uint8Array(buf);
+      const frameB64 = bytesToBase64(buildFrame(FRAME_TYPE_DATA, sessionId, totalChunks, i, payload));
+
+      try { renderQR(frameB64, ecLevel); }
+      catch (e) { alert('Chunk too large for this error-correction level — lower "Chunk size".'); sending = false; break outer; }
+
+      frameCount++; updateStats();
+      await sleep(1000 / fps);
+
+      if ((i + 1) % 25 === 0 && sending) {
+        renderQR(metaFrameB64, ecLevel);
+        frameCount++; updateStats();
+        await sleep(1000 / fps);
+      }
+    }
+
+    if (!loopCheckbox.checked) break;
+  }
+
+  sending = false;
+  startSendBtn.disabled = false;
+  stopSendBtn.disabled = true;
+}
+
+/* ================= RECEIVER ================= */
+const video = document.getElementById('video');
+const scanPreview = document.getElementById('scanPreview');
+const startRecvBtn = document.getElementById('startRecvBtn');
+const stopRecvBtn = document.getElementById('stopRecvBtn');
+const resetRecvBtn = document.getElementById('resetRecvBtn');
+const recvStats = document.getElementById('recvStats');
+const recvBar = document.getElementById('recvBar');
+const downloadBox = document.getElementById('downloadBox');
+const downloadLink = document.getElementById('downloadLink');
+const zoomStatus = document.getElementById('zoomStatus');
+
+let scanning = false;
+let camStream = null;
+let activeSession = null;
+let fileMeta = null;
+let chunks = new Map();
+let recvStart = null;
+let framesSeen = 0;
+
+startRecvBtn.addEventListener('click', startReceiving);
+stopRecvBtn.addEventListener('click', stopReceiving);
+resetRecvBtn.addEventListener('click', resetReceiver);
+
+async function startReceiving() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const msg = 'This browser does not expose camera APIs here. This usually means: ' +
+      'the page is not on HTTPS/localhost, or it is open inside an in-app browser ' +
+      '(Instagram/Facebook/TikTok/etc.) which blocks camera access — open the URL in Chrome or Safari directly instead.';
+    recvStats.textContent = msg;
+    alert(msg);
+    return;
+  }
+
+  // Keep resolution modest — jsQR is plain JS with no hardware acceleration,
+  // and decoding a full 1080p frame on every tick is what caused the "freeze".
+  const constraintAttempts = [
+    { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+    { video: true } // fallback if the constrained request fails (e.g. only one camera, or a picky browser)
+  ];
+
+  let lastErr = null;
+  for (const constraints of constraintAttempts) {
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia(constraints);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) {
+    const msg = 'Camera access failed: ' + lastErr.name + ' — ' + lastErr.message +
+      (lastErr.name === 'NotAllowedError' ? ' (permission was denied — check your browser/site settings and try again)' : '') +
+      (lastErr.name === 'NotFoundError' ? ' (no camera device found)' : '');
+    recvStats.textContent = msg;
+    alert(msg);
+    return;
+  }
+
+  video.srcObject = camStream;
+  try { await video.play(); } catch (e) { /* some browsers auto-play once metadata loads anyway */ }
+  scanning = true;
+  recvStart = performance.now();
+  startRecvBtn.disabled = true;
+  stopRecvBtn.disabled = false;
+  recvStats.textContent = 'Camera started — scanning…';
+  requestAnimationFrame(scanLoop);
+}
+
+function stopReceiving() {
+  scanning = false;
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  startRecvBtn.disabled = false;
+  stopRecvBtn.disabled = true;
+}
+
+function resetReceiver() {
+  stopReceiving();
+  activeSession = null;
+  fileMeta = null;
+  chunks = new Map();
+  framesSeen = 0;
+  lockedRegion = null;
+  lockMisses = 0;
+  recvBar.style.width = '0%';
+  recvStats.textContent = 'Waiting for camera…';
+  zoomStatus.textContent = 'Scanning full frame…';
+  downloadBox.style.display = 'none';
+}
+
+let lastScanTime = 0;
+const SCAN_INTERVAL_MS = 80; // ~12 decode attempts/sec — plenty for QR, keeps CPU load sane
+const MAX_DECODE_DIM = 720;  // downscale the full-frame search canvas regardless of native camera resolution
+let errorStreak = 0;
+
+// --- zoom/lock tracking ---
+// Once a code is found, we crop future frames to a padded box around it (in native
+// video pixel coordinates) so decoding is faster and the preview visually "zooms in."
+// A run of consecutive misses while locked releases the lock and goes back to
+// searching the full frame, in case the code moved or a new session started.
+let lockedRegion = null; // { x, y, w, h } in video pixel space
+let lockMisses = 0;
+const LOCK_MISS_LIMIT = 8;
+const LOCK_PADDING_FRAC = 0.4;  // extra margin around the detected code, as a fraction of its size
+const MIN_REGION_FRAC = 0.15;   // never lock to a region smaller than this fraction of the frame
+const ZOOM_RENDER_DIM = 640;    // render size for the zoomed-in crop (upscaled for a visible zoom effect)
+
+function cornersToBox(loc, vw, vh) {
+  const xs = [loc.topLeftCorner.x, loc.topRightCorner.x, loc.bottomLeftCorner.x, loc.bottomRightCorner.x];
+  const ys = [loc.topLeftCorner.y, loc.topRightCorner.y, loc.bottomLeftCorner.y, loc.bottomRightCorner.y];
+  let minX = Math.min(...xs), maxX = Math.max(...xs);
+  let minY = Math.min(...ys), maxY = Math.max(...ys);
+  const w = maxX - minX, h = maxY - minY;
+  const padX = w * LOCK_PADDING_FRAC, padY = h * LOCK_PADDING_FRAC;
+  minX -= padX; maxX += padX; minY -= padY; maxY += padY;
+
+  const minW = vw * MIN_REGION_FRAC, minH = vh * MIN_REGION_FRAC;
+  if (maxX - minX < minW) { const c = (minX + maxX) / 2; minX = c - minW / 2; maxX = c + minW / 2; }
+  if (maxY - minY < minH) { const c = (minY + maxY) / 2; minY = c - minH / 2; maxY = c + minH / 2; }
+
+  minX = Math.max(0, minX); minY = Math.max(0, minY);
+  maxX = Math.min(vw, maxX); maxY = Math.min(vh, maxY);
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function scanLoop() {
+  if (!scanning) return;
+
+  // Always re-arm the loop first. If anything below throws, we still keep scanning
+  // instead of silently dying — this is what was causing the permanent "freeze."
+  requestAnimationFrame(scanLoop);
+
+  const now = performance.now();
+  if (now - lastScanTime < SCAN_INTERVAL_MS) return;
+  lastScanTime = now;
+
+  try {
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+
+    let srcX, srcY, srcW, srcH, destW, destH;
+
+    if (lockedRegion) {
+      srcX = lockedRegion.x; srcY = lockedRegion.y; srcW = lockedRegion.w; srcH = lockedRegion.h;
+      const aspect = srcW / srcH;
+      if (aspect >= 1) { destW = ZOOM_RENDER_DIM; destH = Math.round(ZOOM_RENDER_DIM / aspect); }
+      else { destH = ZOOM_RENDER_DIM; destW = Math.round(ZOOM_RENDER_DIM * aspect); }
+      zoomStatus.textContent = 'Locked on code — zoomed in';
+    } else {
+      srcX = 0; srcY = 0; srcW = vw; srcH = vh;
+      const scale = Math.min(1, MAX_DECODE_DIM / Math.max(vw, vh));
+      destW = Math.max(1, Math.round(vw * scale));
+      destH = Math.max(1, Math.round(vh * scale));
+      zoomStatus.textContent = 'Scanning full frame…';
+    }
+
+    if (scanPreview.width !== destW || scanPreview.height !== destH) {
+      scanPreview.width = destW;
+      scanPreview.height = destH;
+    }
+    const ctx = scanPreview.getContext('2d');
+    ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, destW, destH);
+    const imgData = ctx.getImageData(0, 0, destW, destH);
+    const code = jsQR(imgData.data, destW, destH, { inversionAttempts: 'dontInvert' });
+
+    if (code && code.data) {
+      // Map the detected corners from the (possibly cropped+scaled) render back to
+      // native video pixel coordinates, then lock/re-lock onto that region.
+      const scaleBackX = srcW / destW, scaleBackY = srcH / destH;
+      const mapped = {
+        topLeftCorner: { x: srcX + code.location.topLeftCorner.x * scaleBackX, y: srcY + code.location.topLeftCorner.y * scaleBackY },
+        topRightCorner: { x: srcX + code.location.topRightCorner.x * scaleBackX, y: srcY + code.location.topRightCorner.y * scaleBackY },
+        bottomLeftCorner: { x: srcX + code.location.bottomLeftCorner.x * scaleBackX, y: srcY + code.location.bottomLeftCorner.y * scaleBackY },
+        bottomRightCorner: { x: srcX + code.location.bottomRightCorner.x * scaleBackX, y: srcY + code.location.bottomRightCorner.y * scaleBackY }
+      };
+      lockedRegion = cornersToBox(mapped, vw, vh);
+      lockMisses = 0;
+      handleDecodedText(code.data);
+    } else if (lockedRegion) {
+      lockMisses++;
+      if (lockMisses > LOCK_MISS_LIMIT) {
+        lockedRegion = null;
+        lockMisses = 0;
+      }
+    }
+    errorStreak = 0;
+  } catch (e) {
+    errorStreak++;
+    console.error('scanLoop error:', e);
+    if (errorStreak === 1 || errorStreak % 50 === 0) {
+      recvStats.textContent = 'Scan error (' + errorStreak + 'x): ' + e.message + ' — still trying…';
+    }
+  }
+}
+
+function handleDecodedText(text) {
+  let bytes, frame;
+  try { bytes = base64ToBytes(text); frame = parseFrame(bytes); } catch (e) { return; }
+  if (!frame) return;
+  framesSeen++;
+
+  if (activeSession === null) {
+    if (frame.type !== FRAME_TYPE_META) return;
+    activeSession = frame.sessionId;
+    chunks = new Map();
+  } else if (frame.sessionId !== activeSession) {
+    if (frame.type === FRAME_TYPE_META) {
+      activeSession = frame.sessionId;
+      chunks = new Map();
+      fileMeta = null;
+    } else return;
+  }
+
+  if (frame.type === FRAME_TYPE_META) {
+    try { fileMeta = JSON.parse(new TextDecoder().decode(frame.payload)); } catch (e) {}
+    updateRecvStats();
+    return;
+  }
+
+  if (frame.type === FRAME_TYPE_DATA) {
+    if (!chunks.has(frame.chunkIndex)) chunks.set(frame.chunkIndex, frame.payload);
+    updateRecvStats();
+    if (fileMeta && chunks.size === fileMeta.totalChunks) finalizeFile();
+  }
+}
+
+function updateRecvStats() {
+  const elapsed = recvStart ? (performance.now() - recvStart) / 1000 : 0;
+  if (fileMeta) {
+    const pct = Math.min(100, (chunks.size / fileMeta.totalChunks) * 100);
+    recvBar.style.width = pct.toFixed(1) + '%';
+    const received = chunks.size * fileMeta.chunkSize;
+    const rate = elapsed > 0 ? received / elapsed : 0;
+    recvStats.innerHTML =
+      `<b>${fileMeta.name}</b> (${fmtBytes(fileMeta.size)})<br>` +
+      `Chunks: <b>${chunks.size} / ${fileMeta.totalChunks}</b> (${pct.toFixed(1)}%)<br>` +
+      `Elapsed <b>${elapsed.toFixed(1)}s</b> · ~<b>${fmtBytes(rate)}/s</b> · frames seen: ${framesSeen}`;
+  } else {
+    recvStats.textContent = `Waiting for metadata frame… (frames seen: ${framesSeen})`;
+  }
+}
+
+function finalizeFile() {
+  const total = new Uint8Array(fileMeta.size);
+  let offset = 0;
+  for (let i = 0; i < fileMeta.totalChunks; i++) {
+    const c = chunks.get(i);
+    if (!c) return; // shouldn't happen — size check already matched count
+    total.set(c, offset);
+    offset += c.length;
+  }
+  const blob = new Blob([total], { type: fileMeta.mime });
+  const url = URL.createObjectURL(blob);
+  downloadLink.href = url;
+  downloadLink.download = fileMeta.name;
+  downloadLink.textContent = `download ${fileMeta.name}`;
+  downloadBox.style.display = 'block';
+  stopReceiving();
+}
+</script>
+</body>
+</html>
